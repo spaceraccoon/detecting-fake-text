@@ -41,6 +41,14 @@ python server.py --model BERT
 
 the instance runs now at [http://localhost:5001/client/index.html?nodemo](http://localhost:5001/client/index.html?nodemo). HINT: we only provide demo texts for `gpt2-small`.
 
+## Run the GPT-3 server
+
+start the server for `GPT-3 API`:
+```bash
+python server.py --model gpt-3-davinci
+```
+
+the demo instance runs now at [http://localhost:5001/client/index.html](http://localhost:5001/client/index.html)
 
 ## server.py options
 
