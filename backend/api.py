@@ -1,11 +1,16 @@
 import numpy as np
 import torch
 import time
+import openai
+import config
+import unicodedata
 
-from pytorch_pretrained_bert import (GPT2LMHeadModel, GPT2Tokenizer,
+from pytorch_pretrained_bert import (GPT2LMHeadModel,
                                      BertTokenizer, BertForMaskedLM)
+from transformers import GPT2Tokenizer     # replaced with transformers GPT2Tokenizer to handle unicode properly (https://github.com/huggingface/transformers/issues/537)
 from .class_register import register_api
 
+openai.api_key = config.OPENAI_API_KEY
 
 class AbstractLanguageChecker():
     """
@@ -313,6 +318,103 @@ class BERTLM(AbstractLanguageChecker):
             token = '\u010A' + token
         #
         # # print ('....', token)
+        return token
+
+
+@register_api(name='gpt-3-davinci')
+class GPT3LM(AbstractLanguageChecker):
+    def __init__(self, model_name_or_path="gpt2"):
+        super(GPT3LM, self).__init__()
+        self.enc = GPT2Tokenizer.from_pretrained(model_name_or_path)
+        self.start_token = '<|endoftext|>'
+        print("Loaded GPT-3 model!")
+
+    # Watch this space: Lots of edge cases from GPT-3 API
+    def preprocess(self, token):
+        # Normalize non-standard unicode
+        token = unicodedata.normalize("NFKC", token)
+
+        # Handle strange API byte returns ("bytes:\xe2\x80")
+        if token.startswith('bytes:'):
+            token = token[6:]
+
+        # Handle whitespace characters not properly encoded by API
+        if token == len(token) * " ":
+            token = token.replace(" ", "\u0120")
+        elif token == len(token) * "\n":
+            token = token.replace("\n", "\u010A")
+        elif token == len(token) * "\t":
+            token = token.replace("\t", "\u0109")
+
+        return token
+
+    def check_probabilities(self, in_text, topk=40):
+        # Process input
+        encoded_context = self.enc.encode(in_text)
+        encoded_context = [self.enc.encoder[self.start_token]] + encoded_context
+
+        real_topk = []
+        pred_topk = []
+        for i in range(1, len(encoded_context)):
+            expected_token = encoded_context[i]
+
+            # Feed tokens prior to test token as prompt
+            prompt = self.enc.decode(encoded_context[:i])
+            response = openai.Completion.create(engine="davinci", prompt=prompt, max_tokens=1, logprobs=100)
+
+            # Convert logprobs to probs
+            logprobs = response["choices"][0]["logprobs"]["top_logprobs"][0]
+            probs = { self.enc.encode(self.preprocess(k))[0]: round(np.exp(v), 5) for k, v in logprobs.items() }
+
+            # Sort probabilites in descending order
+            probs_sorted = { k: v for k, v in sorted(probs.items(), key=lambda item: item[1], reverse=True)}
+
+            # Get absolute ranks
+            probs_sorted_list = list(probs_sorted)
+            ranks = { k: probs_sorted_list.index(k) for k, v in probs_sorted.items() }
+
+            if expected_token in ranks:
+                real_topk.append((ranks[expected_token], probs[expected_token]))
+            else:
+                # Mask all tokens with rank lower than 100 due to maximum of 100 logprobs allowed by API
+                real_topk.append((100, 0.0001))
+
+            pred_topk.append([(self.postprocess(self.enc.decoder[s[0]]), s[1]) for s in list(probs_sorted.items())[:20]])
+
+        # [str, str, ...]
+        bpe_strings = [self.enc.decoder[s] for s in encoded_context]
+
+        bpe_strings = [self.postprocess(s) for s in bpe_strings]
+
+        payload = {'bpe_strings': bpe_strings,
+                   'real_topk': real_topk,
+                   'pred_topk': pred_topk}
+
+        return payload
+
+
+    def postprocess(self, token):
+        with_space = False
+        with_break = False
+        if token.startswith('Ġ'):
+            with_space = True
+            token = token[1:]
+        elif token.startswith('â'):
+            token = ' '
+        elif token.startswith('Ċ'):
+            token = ' '
+            with_break = True
+
+        token = '-' if token.startswith('â') else token
+        token = '“' if token.startswith('ľ') else token
+        token = '”' if token.startswith('Ŀ') else token
+        token = "'" if token.startswith('Ļ') else token
+
+        if with_space:
+            token = '\u0120' + token
+        if with_break:
+            token = '\u010A' + token
+
         return token
 
 

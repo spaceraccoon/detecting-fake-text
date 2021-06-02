@@ -19,7 +19,7 @@ const current = {
     },
     demo: true,
     entropyThreshold: 10,
-    project_name: 'gpt-2-small'
+    project_name: 'gpt-3-davinci'
 };
 
 
